@@ -1,6 +1,8 @@
 import os
 from datetime import date, datetime, timedelta
 from io import BytesIO
+import re
+import unicodedata
 
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort
 from flask_sqlalchemy import SQLAlchemy
@@ -201,8 +203,7 @@ def books():
     q=request.args.get('q','').strip(); query=Book.query
     if q:
         like=f'%{q}%'; query=query.filter(db.or_(Book.code.ilike(like),Book.title.ilike(like),Book.author.ilike(like)))
-    bad_import_count=Book.query.filter_by(author='4',category='44',quantity=44,location='4').count()
-    return render_template('books.html', books=query.order_by(Book.title).all(), q=q, bad_import_count=bad_import_count)
+    return render_template('books.html', books=query.order_by(Book.title).all(), q=q)
 
 def save_cover(file_obj):
     if not file_obj or not file_obj.filename:
@@ -274,90 +275,152 @@ def export_books():
     for b in Book.query.order_by(Book.id).all(): ws.append([b.code,b.title,b.author,b.category,b.publisher,b.year,b.quantity,b.location])
     out=BytesIO(); wb.save(out); out.seek(0); return send_file(out,as_attachment=True,download_name='danh_sach_sach.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
-EXCEL_HEADERS = {
-    'ma': 'code', 'mã': 'code', 'code': 'code', 'mã sách': 'code',
-    'ten sach': 'title', 'tên sách': 'title', 'tên': 'title', 'title': 'title',
-    'tac gia': 'author', 'tác giả': 'author', 'author': 'author',
-    'the loai': 'category', 'thể loại': 'category', 'category': 'category',
-    'nha xuat ban': 'publisher', 'nhà xuất bản': 'publisher', 'publisher': 'publisher',
-    'nam': 'year', 'năm': 'year', 'year': 'year',
-    'so luong': 'quantity', 'số lượng': 'quantity', 'số bản': 'quantity', 'quantity': 'quantity',
-    'vi tri': 'location', 'vị trí': 'location', 'location': 'location'
+def _norm_header(value):
+    """Chuẩn hóa tiêu đề Excel để nhận nhiều cách đặt tên khác nhau."""
+    if value is None:
+        return ''
+    text = str(value).strip().lower()
+    text = ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
+    text = text.replace('đ', 'd')
+    return re.sub(r'[^a-z0-9]+', '', text)
+
+EXCEL_HEADER_ALIASES = {
+    'code': {'ma', 'masach', 'masachcode', 'code', 'bookcode', 'isbn'},
+    'title': {'tensach', 'tensachbook', 'tuaasach', 'title', 'booktitle'},
+    'author': {'tacgia', 'author', 'bookauthor'},
+    'category': {'theloai', 'loaisach', 'category', 'genre'},
+    'publisher': {'nhaxuatban', 'nxb', 'publisher'},
+    'year': {'nam', 'namxuatban', 'year', 'publicationyear'},
+    'quantity': {'soluong', 'soquyen', 'quantity', 'qty', 'tonkho'},
+    'location': {'vitri', 'kesach', 'kệsach', 'location', 'shelf', 'shelflocation'},
 }
 
-def _norm_header(v):
-    if v is None: return ''
-    s=str(v).strip().lower().replace('_',' ').replace('-',' ')
-    return ' '.join(s.split())
-
-def _excel_map(ws):
-    first=list(ws.iter_rows(min_row=1,max_row=1,values_only=True))[0]
-    mapping={}
-    for i,h in enumerate(first):
-        key=EXCEL_HEADERS.get(_norm_header(h))
-        if key and key not in mapping: mapping[key]=i
-    # Nếu file không có tiêu đề chuẩn, giữ tương thích với mẫu cũ 8 cột.
-    if 'code' not in mapping or 'title' not in mapping:
-        mapping={'code':0,'title':1,'author':2,'category':3,'publisher':4,'year':5,'quantity':6,'location':7}
+def _excel_column_map(headers):
+    mapping = {}
+    normalized = [_norm_header(h) for h in headers]
+    for idx, h in enumerate(normalized):
+        for field, aliases in EXCEL_HEADER_ALIASES.items():
+            if h in aliases and field not in mapping:
+                mapping[field] = idx
     return mapping
 
-def _cell(row,mapping,key):
-    i=mapping.get(key)
-    return row[i] if i is not None and i < len(row) else None
+def _cell(row, mapping, field, default=None):
+    idx = mapping.get(field)
+    if idx is None or idx >= len(row):
+        return default
+    value = row[idx]
+    if value is None:
+        return default
+    if isinstance(value, str):
+        value = value.strip()
+        return value if value else default
+    return value
+
+def _to_int(value, default=None):
+    if value is None or value == '':
+        return default
+    try:
+        return int(float(str(value).replace(',', '.')))
+    except (TypeError, ValueError):
+        return default
+
+@app.route('/books/import-template')
+def import_books_template():
+    if not logged_in(): return redirect(url_for('login'))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Danh sách sách'
+    ws.append(['Mã', 'Tên sách', 'Tác giả', 'Thể loại', 'Nhà xuất bản', 'Năm', 'Số lượng', 'Vị trí'])
+    ws.append(['S001', 'Ví dụ: Dế Mèn phiêu lưu ký', 'Tô Hoài', 'Văn học', 'Kim Đồng', 2026, 5, 'Kệ A1'])
+    ws.freeze_panes = 'A2'
+    widths = [16, 35, 28, 22, 28, 12, 14, 18]
+    for i, width in enumerate(widths, 1):
+        ws.column_dimensions[chr(64+i)].width = width
+    out = BytesIO(); wb.save(out); out.seek(0)
+    return send_file(out, as_attachment=True, download_name='mau_nhap_sach.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.route('/books/cleanup-bad-imports', methods=['POST'])
+def cleanup_bad_imports():
+    if not logged_in():
+        return redirect(url_for('login'))
+    # Chỉ nhắm đúng nhóm dữ liệu nhập lỗi đã xác định: tác giả=4, thể loại=44, số lượng=44.
+    # Không xóa sách đã có lịch sử mượn.
+    candidates = Book.query.filter_by(author='4', category='44', quantity=44).all()
+    removed = 0
+    protected = 0
+    for b in candidates:
+        if Loan.query.filter_by(book_id=b.id).first():
+            protected += 1
+            continue
+        db.session.delete(b)
+        removed += 1
+    db.session.commit()
+    flash(f'Đã dọn {removed} sách nhập lỗi. Giữ lại {protected} sách vì đã có lịch sử mượn.', 'success')
+    return redirect(url_for('import_books'))
 
 @app.route('/books/import', methods=['GET','POST'])
 def import_books():
     if not logged_in(): return redirect(url_for('login'))
-    if request.method=='POST':
-        f=request.files.get('file')
-        if not f: flash('Chưa chọn file Excel.','error'); return redirect(request.url)
+    if request.method == 'POST':
+        f = request.files.get('file')
+        if not f:
+            flash('Chưa chọn file Excel.', 'error')
+            return redirect(request.url)
         try:
-            wb=load_workbook(f,read_only=True,data_only=True); ws=wb.active
-            mapping=_excel_map(ws); added=updated=skipped=0
-            for row in ws.iter_rows(min_row=2,values_only=True):
-                code=_cell(row,mapping,'code'); title=_cell(row,mapping,'title')
-                if code is None or title is None or not str(code).strip() or not str(title).strip():
-                    skipped += 1; continue
-                code=str(code).strip(); title=str(title).strip()
-                year=_cell(row,mapping,'year'); qty=_cell(row,mapping,'quantity')
-                try: year=int(float(year)) if year not in (None,'') else None
-                except: year=None
-                try: qty=max(0,int(float(qty))) if qty not in (None,'') else 0
-                except: qty=0
-                data=dict(code=code,title=title,author=_cell(row,mapping,'author'),category=_cell(row,mapping,'category'),publisher=_cell(row,mapping,'publisher'),year=year,quantity=qty,location=_cell(row,mapping,'location'))
-                b=Book.query.filter_by(code=code).first()
+            wb = load_workbook(f, read_only=True, data_only=True)
+            ws = wb.active
+            rows = list(ws.iter_rows(values_only=True))
+            if not rows:
+                flash('File Excel không có dữ liệu.', 'error')
+                return redirect(request.url)
+
+            headers = list(rows[0])
+            mapping = _excel_column_map(headers)
+            required = {'code', 'title'}
+            missing = required - set(mapping)
+
+            # Không tự đoán thứ tự cột nữa: tránh nhập lệch dữ liệu.
+            if missing:
+                missing_text = ', '.join(sorted(missing))
+                flash(f'File Excel chưa đúng mẫu. Thiếu cột bắt buộc: {missing_text}. Hãy tải file Excel mẫu rồi nhập lại.', 'error')
+                return redirect(url_for('import_books'))
+            start_row = 1
+
+            added = 0
+            updated = 0
+            skipped = 0
+            for row in rows[start_row:]:
+                code = _cell(row, mapping, 'code')
+                title = _cell(row, mapping, 'title')
+                if not code or not title:
+                    skipped += 1
+                    continue
+                code = str(code).strip()
+                title = str(title).strip()
+                data = {
+                    'title': title,
+                    'author': _cell(row, mapping, 'author'),
+                    'category': _cell(row, mapping, 'category'),
+                    'publisher': _cell(row, mapping, 'publisher'),
+                    'year': _to_int(_cell(row, mapping, 'year')),
+                    'quantity': _to_int(_cell(row, mapping, 'quantity'), 0),
+                    'location': _cell(row, mapping, 'location'),
+                }
+                b = Book.query.filter_by(code=code).first()
                 if b:
-                    for k,v in data.items():
-                        if k!='code': setattr(b,k,v)
+                    for key, value in data.items():
+                        setattr(b, key, value)
                     updated += 1
                 else:
-                    db.session.add(Book(**data)); added += 1
+                    db.session.add(Book(code=code, **data))
+                    added += 1
             db.session.commit()
-            flash(f'Nhập Excel thành công: thêm {added}, cập nhật {updated}, bỏ qua {skipped}.','success')
+            flash(f'Đã nhập Excel: thêm {added}, cập nhật {updated}, bỏ qua {skipped} dòng.', 'success')
             return redirect(url_for('books'))
-        except Exception as e: db.session.rollback(); flash(f'Không thể đọc Excel: {e}','error')
-    return render_template('import_books.html', bad_count=Book.query.filter_by(author='4',category='44',quantity=44,location='4').count())
-
-@app.route('/books/template')
-def download_books_template():
-    if not logged_in(): return redirect(url_for('login'))
-    wb=Workbook(); ws=wb.active; ws.title='Danh sách sách'
-    ws.append(['Mã','Tên sách','Tác giả','Thể loại','Nhà xuất bản','Năm','Số lượng','Vị trí'])
-    ws.append(['S001','Ví dụ: Dế Mèn phiêu lưu ký','Tô Hoài','Văn học','NXB Kim Đồng',2026,5,'Kệ A1'])
-    out=BytesIO(); wb.save(out); out.seek(0)
-    return send_file(out,as_attachment=True,download_name='mau_nhap_sach.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
-@app.route('/books/cleanup-bad-import', methods=['POST'])
-def cleanup_bad_import():
-    if not logged_in(): return redirect(url_for('login'))
-    bad=Book.query.filter_by(author='4',category='44',quantity=44,location='4').all()
-    deleted=0; skipped=0
-    for b in bad:
-        if Loan.query.filter_by(book_id=b.id).first(): skipped += 1; continue
-        db.session.delete(b); deleted += 1
-    db.session.commit()
-    flash(f'Đã dọn dữ liệu nhập lỗi: xóa {deleted} sách, giữ lại {skipped} sách vì đã có lịch sử mượn.','success')
-    return redirect(url_for('books'))
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Không thể đọc Excel: {e}', 'error')
+    return render_template('import_books.html')
 
 @app.route('/readers')
 def readers():

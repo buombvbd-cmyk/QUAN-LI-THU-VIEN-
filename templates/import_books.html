@@ -2,18 +2,20 @@
 {% block content %}
 <section class="formcard">
   <h1>📥 Nhập sách bằng Excel</h1>
-  <p>Hệ thống tự nhận diện các cột: <b>Mã, Tên sách, Tác giả, Thể loại, Nhà xuất bản, Năm, Số lượng, Vị trí</b>.</p>
-  <div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
-    <a class="btn light" href="{{url_for('download_books_template')}}">📥 Tải Excel mẫu</a>
-    {% if bad_count %}
-    <form method="post" action="{{url_for('cleanup_bad_import')}}" onsubmit="return confirm('Xóa các sách có dấu hiệu nhập Excel sai (Tác giả=4, Thể loại=44, Số lượng=44, Vị trí=4)? Chỉ sách chưa từng mượn mới bị xóa.');">
-      <button class="btn" type="submit">🧹 Dọn {{bad_count}} sách nhập lỗi</button>
-    </form>
-    {% endif %}
-  </div>
+  <p>Hệ thống chỉ nhận file có đúng tên cột bắt buộc. Cách này giúp tránh tình trạng dữ liệu bị lệch cột.</p>
+  <p><a class="btn secondary" href="{{ url_for('import_books_template') }}">📥 Tải file Excel mẫu</a></p>
   <form method="post" enctype="multipart/form-data">
     <input type="file" name="file" accept=".xlsx" required>
-    <button class="btn" type="submit">📤 Nhập dữ liệu</button>
+    <button class="btn">📤 Nhập dữ liệu</button>
+  </form>
+</section>
+
+<section class="formcard" style="margin-top:16px;border:1px solid #f0c36d;background:#fffaf0">
+  <h2>🧹 Dọn dữ liệu nhập Excel bị lỗi</h2>
+  <p>Chức năng này chỉ tìm nhóm dữ liệu lỗi đã xác định: <b>Tác giả = 4</b>, <b>Thể loại = 44</b>, <b>Số lượng = 44</b>.</p>
+  <p><b>Không xóa sách đã có lịch sử mượn.</b></p>
+  <form method="post" action="{{ url_for('cleanup_bad_imports') }}" onsubmit="return confirm('Bạn chắc chắn muốn dọn nhóm dữ liệu Excel nhập lỗi này?');">
+    <button class="btn" type="submit">🧹 Dọn dữ liệu nhập lỗi</button>
   </form>
 </section>
 {% endblock %}
