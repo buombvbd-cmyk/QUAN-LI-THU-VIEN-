@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<h1>🏫 Lớp học</h1><section class="card"><table><tr><th>Lớp</th><th>Bạn đọc</th><th>Lượt đọc</th><th>Tổng điểm</th></tr>{% for c in classes %}<tr><td>{{c.name}}</td><td>{{c.readers}}</td><td>{{c.books}}</td><td>{{c.points}}</td></tr>{% else %}<tr><td colspan="4">Chưa có lớp.</td></tr>{% endfor %}</table></section>{% endblock %}
