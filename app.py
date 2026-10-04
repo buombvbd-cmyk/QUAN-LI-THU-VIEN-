@@ -5,6 +5,7 @@ from io import BytesIO
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 from openpyxl import Workbook, load_workbook
 import qrcode
 
@@ -20,6 +21,9 @@ else:
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///library.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024
+UPLOAD_DIR = os.path.join(app.root_path, 'static', 'uploads')
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+ALLOWED_COVER_EXTENSIONS = {'png','jpg','jpeg','webp'}
 
 db = SQLAlchemy(app)
 
@@ -121,7 +125,9 @@ def require_login():
     return None
 
 def total_reading_points(reader_id):
-    return (db.session.query(db.func.coalesce(db.func.sum(ReadingPointsLog.points), 0)).filter_by(reader_id=reader_id).scalar() or 0) + (db.session.query(db.func.coalesce(db.func.sum(ReadingActivity.points), 0)).filter_by(reader_id=reader_id, status='Đã duyệt').scalar() or 0)
+    return ((db.session.query(db.func.coalesce(db.func.sum(ReadingPointsLog.points), 0)).filter_by(reader_id=reader_id).scalar() or 0)
+            + (db.session.query(db.func.coalesce(db.func.sum(ReadingActivity.points), 0)).filter_by(reader_id=reader_id, status='Đã duyệt').scalar() or 0)
+            + (db.session.query(db.func.coalesce(db.func.sum(Reward.points), 0)).filter_by(reader_id=reader_id).scalar() or 0))
 
 def books_read(reader_id):
     return Loan.query.filter_by(reader_id=reader_id, status='Đã trả').count()
@@ -191,12 +197,29 @@ def books():
         like=f'%{q}%'; query=query.filter(db.or_(Book.code.ilike(like),Book.title.ilike(like),Book.author.ilike(like)))
     return render_template('books.html', books=query.order_by(Book.title).all(), q=q)
 
+def save_cover(file_obj):
+    if not file_obj or not file_obj.filename:
+        return None
+    ext=file_obj.filename.rsplit('.',1)[-1].lower() if '.' in file_obj.filename else ''
+    if ext not in ALLOWED_COVER_EXTENSIONS:
+        raise ValueError('Ảnh bìa phải là PNG, JPG, JPEG hoặc WEBP.')
+    filename=secure_filename(file_obj.filename)
+    stem=secure_filename(os.path.splitext(filename)[0]) or 'cover'
+    filename=f"{stem}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.{ext}"
+    path=os.path.join(UPLOAD_DIR, filename)
+    file_obj.save(path)
+    return f'uploads/{filename}'
+
 @app.route('/books/add', methods=['GET','POST'])
 def add_book():
     if not logged_in(): return redirect(url_for('login'))
     if request.method=='POST':
         try:
-            b=Book(code=request.form['code'].strip(), title=request.form['title'].strip(), author=request.form.get('author'), category=request.form.get('category'), publisher=request.form.get('publisher'), year=int(request.form['year']) if request.form.get('year') else None, quantity=max(0,int(request.form.get('quantity') or 0)), location=request.form.get('location'))
+            code=request.form.get('code','').strip(); title=request.form.get('title','').strip()
+            if not code or not title: raise ValueError('Mã sách và tên sách là bắt buộc.')
+            if Book.query.filter_by(code=code).first(): raise ValueError('Mã sách đã tồn tại.')
+            cover=save_cover(request.files.get('cover'))
+            b=Book(code=code,title=title,author=request.form.get('author'),category=request.form.get('category'),publisher=request.form.get('publisher'),year=int(request.form['year']) if request.form.get('year') else None,quantity=max(0,int(request.form.get('quantity') or 0)),location=request.form.get('location'),cover=cover)
             db.session.add(b); db.session.commit(); flash('Đã thêm sách.','success'); return redirect(url_for('books'))
         except Exception as e:
             db.session.rollback(); flash(f'Không thể thêm sách: {e}','error')
@@ -208,7 +231,13 @@ def edit_book(book_id):
     b=Book.query.get_or_404(book_id)
     if request.method=='POST':
         try:
-            b.code=request.form['code'].strip(); b.title=request.form['title'].strip(); b.author=request.form.get('author'); b.category=request.form.get('category'); b.publisher=request.form.get('publisher'); b.year=int(request.form['year']) if request.form.get('year') else None; b.quantity=max(0,int(request.form.get('quantity') or 0)); b.location=request.form.get('location'); db.session.commit(); flash('Đã cập nhật sách.','success'); return redirect(url_for('books'))
+            code=request.form.get('code','').strip(); title=request.form.get('title','').strip()
+            other=Book.query.filter(Book.code==code,Book.id!=b.id).first()
+            if other: raise ValueError('Mã sách đã tồn tại.')
+            b.code=code; b.title=title; b.author=request.form.get('author'); b.category=request.form.get('category'); b.publisher=request.form.get('publisher'); b.year=int(request.form['year']) if request.form.get('year') else None; b.quantity=max(0,int(request.form.get('quantity') or 0)); b.location=request.form.get('location')
+            new_cover=save_cover(request.files.get('cover'))
+            if new_cover: b.cover=new_cover
+            db.session.commit(); flash('Đã cập nhật sách.','success'); return redirect(url_for('book_detail',book_id=b.id))
         except Exception as e: db.session.rollback(); flash(f'Lỗi: {e}','error')
     return render_template('book_form.html', book=b)
 
@@ -217,7 +246,8 @@ def delete_book(book_id):
     if not logged_in(): return redirect(url_for('login'))
     b=Book.query.get_or_404(book_id)
     if Loan.query.filter_by(book_id=b.id).first(): flash('Không thể xóa sách đã có lịch sử mượn.','error')
-    else: db.session.delete(b); db.session.commit(); flash('Đã xóa sách.','success')
+    else:
+        db.session.delete(b); db.session.commit(); flash('Đã xóa sách.','success')
     return redirect(url_for('books'))
 
 @app.route('/books/<int:book_id>')
@@ -427,6 +457,29 @@ def add_activity():
 def add_reward():
     if not logged_in(): return redirect(url_for('reading_culture'))
     reader=Reader.query.get_or_404(int(request.form['reader_id'])); db.session.add(Reward(reader_id=reader.id,title=request.form['title'].strip(),description=request.form.get('description'),points=int(request.form.get('points') or 0))); db.session.commit(); flash('Đã ghi nhận khen thưởng.','success'); return redirect(url_for('reading_profile',reader_id=reader.id))
+
+
+@app.route('/reports/export')
+def reports_export():
+    if not logged_in(): return redirect(url_for('login'))
+    wb=Workbook(); ws=wb.active; ws.title='Tong quan'
+    ws.append(['Chỉ tiêu','Giá trị'])
+    ws.append(['Đầu sách',Book.query.count()]); ws.append(['Tổng bản sách',sum(b.quantity for b in Book.query.all())])
+    ws.append(['Bạn đọc',Reader.query.count()]); ws.append(['Phiếu mượn',Loan.query.count()]); ws.append(['Đang mượn',Loan.query.filter_by(status='Đang mượn').count()])
+    ws.append(['Quá hạn',Loan.query.filter(Loan.status=='Đang mượn',Loan.due_date<date.today()).count()])
+    ws.append(['Điểm Văn hóa Đọc',sum(total_reading_points(r.id) for r in Reader.query.all())])
+    out=BytesIO(); wb.save(out); out.seek(0)
+    return send_file(out,as_attachment=True,download_name='bao_cao_thu_vien.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.route('/classes/export')
+def classes_export():
+    if not logged_in(): return redirect(url_for('login'))
+    names=[x[0] for x in db.session.query(Reader.class_name).filter(Reader.class_name.isnot(None),Reader.class_name!='').distinct().order_by(Reader.class_name).all()]
+    wb=Workbook(); ws=wb.active; ws.title='Theo lop'; ws.append(['Lớp','Bạn đọc','Lượt đọc','Điểm'])
+    for name in names:
+        rs=Reader.query.filter_by(class_name=name).all(); ws.append([name,len(rs),sum(books_read(r.id) for r in rs),sum(total_reading_points(r.id) for r in rs)])
+    out=BytesIO(); wb.save(out); out.seek(0)
+    return send_file(out,as_attachment=True,download_name='bao_cao_lop.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == '__main__':
     print('Website QUẢN LÍ THƯ VIỆN đang chạy')

@@ -1,24 +1,21 @@
-# QUẢN LÍ THƯ VIỆN + VĂN HÓA ĐỌC
+# QUẢN LÍ THƯ VIỆN + VĂN HÓA ĐỌC — GIAI ĐOẠN 1
 
-Bộ code hoàn chỉnh để đưa lên GitHub/Render.
+Bản nâng cấp hoàn chỉnh từ bộ V2 đang chạy.
 
-## Chạy trên máy
-1. Cài Python 3.11+.
-2. Mở CMD tại thư mục dự án.
-3. Chạy `pip install -r requirements.txt`.
-4. Chạy `python app.py` hoặc `run.bat`.
-5. Mở http://127.0.0.1:5000
+## Có sẵn
+- Quản lý sách: thêm/sửa/xóa, ảnh bìa, tìm kiếm, QR, nhập/xuất Excel
+- Bạn đọc: thêm/sửa/xóa, QR, thẻ bạn đọc, hồ sơ đọc
+- Mượn/trả, mượn nhanh, trả nhanh, giới hạn 5 sách đang mượn
+- Kệ sách, lớp học, báo cáo, xuất Excel
+- Văn hóa Đọc: điểm, hoạt động, huy hiệu, khen thưởng, bảng xếp hạng
 
-Tài khoản mặc định: admin / admin123
+## Tài khoản mặc định
+- admin / admin123
 
-## Database
-- Nếu có biến môi trường `DATABASE_URL`, ứng dụng dùng PostgreSQL.
-- Nếu không có, ứng dụng dùng SQLite `library.db` và tự tạo khi chạy lần đầu.
+## Chạy local
+```bash
+pip install -r requirements.txt
+python app.py
+```
 
-## Tính năng Văn hóa Đọc
-- Hồ sơ đọc sách
-- 20 điểm cho mỗi lượt trả sách thành công
-- Hoạt động cảm nhận/giới thiệu/video/sân khấu hóa
-- Huy hiệu theo số lượt đọc: 1, 5, 10, 20, 50
-- Khen thưởng
-- Bảng xếp hạng theo lớp/toàn trường
+Không đưa file database cũ vào bộ code này. Khi chạy local, SQLite sẽ tạo `library.db` cạnh `app.py`. Trên Render, dùng `DATABASE_URL` nếu đã cấu hình PostgreSQL.
