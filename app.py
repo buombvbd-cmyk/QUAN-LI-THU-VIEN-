@@ -201,7 +201,8 @@ def books():
     q=request.args.get('q','').strip(); query=Book.query
     if q:
         like=f'%{q}%'; query=query.filter(db.or_(Book.code.ilike(like),Book.title.ilike(like),Book.author.ilike(like)))
-    return render_template('books.html', books=query.order_by(Book.title).all(), q=q)
+    bad_import_count=Book.query.filter_by(author='4',category='44',quantity=44,location='4').count()
+    return render_template('books.html', books=query.order_by(Book.title).all(), q=q, bad_import_count=bad_import_count)
 
 def save_cover(file_obj):
     if not file_obj or not file_obj.filename:
@@ -273,6 +274,37 @@ def export_books():
     for b in Book.query.order_by(Book.id).all(): ws.append([b.code,b.title,b.author,b.category,b.publisher,b.year,b.quantity,b.location])
     out=BytesIO(); wb.save(out); out.seek(0); return send_file(out,as_attachment=True,download_name='danh_sach_sach.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
+EXCEL_HEADERS = {
+    'ma': 'code', 'mã': 'code', 'code': 'code', 'mã sách': 'code',
+    'ten sach': 'title', 'tên sách': 'title', 'tên': 'title', 'title': 'title',
+    'tac gia': 'author', 'tác giả': 'author', 'author': 'author',
+    'the loai': 'category', 'thể loại': 'category', 'category': 'category',
+    'nha xuat ban': 'publisher', 'nhà xuất bản': 'publisher', 'publisher': 'publisher',
+    'nam': 'year', 'năm': 'year', 'year': 'year',
+    'so luong': 'quantity', 'số lượng': 'quantity', 'số bản': 'quantity', 'quantity': 'quantity',
+    'vi tri': 'location', 'vị trí': 'location', 'location': 'location'
+}
+
+def _norm_header(v):
+    if v is None: return ''
+    s=str(v).strip().lower().replace('_',' ').replace('-',' ')
+    return ' '.join(s.split())
+
+def _excel_map(ws):
+    first=list(ws.iter_rows(min_row=1,max_row=1,values_only=True))[0]
+    mapping={}
+    for i,h in enumerate(first):
+        key=EXCEL_HEADERS.get(_norm_header(h))
+        if key and key not in mapping: mapping[key]=i
+    # Nếu file không có tiêu đề chuẩn, giữ tương thích với mẫu cũ 8 cột.
+    if 'code' not in mapping or 'title' not in mapping:
+        mapping={'code':0,'title':1,'author':2,'category':3,'publisher':4,'year':5,'quantity':6,'location':7}
+    return mapping
+
+def _cell(row,mapping,key):
+    i=mapping.get(key)
+    return row[i] if i is not None and i < len(row) else None
+
 @app.route('/books/import', methods=['GET','POST'])
 def import_books():
     if not logged_in(): return redirect(url_for('login'))
@@ -280,17 +312,52 @@ def import_books():
         f=request.files.get('file')
         if not f: flash('Chưa chọn file Excel.','error'); return redirect(request.url)
         try:
-            wb=load_workbook(f,read_only=True,data_only=True); ws=wb.active; rows=list(ws.iter_rows(values_only=True)); added=0
-            for row in rows[1:]:
-                vals=list(row)+[None]*8; code,title=vals[0],vals[1]
-                if not code or not title: continue
-                b=Book.query.filter_by(code=str(code).strip()).first()
-                data=dict(code=str(code).strip(),title=str(title).strip(),author=vals[2],category=vals[3],publisher=vals[4],year=int(vals[5]) if vals[5] else None,quantity=int(vals[6] or 0),location=vals[7])
-                if b: [setattr(b,k,v) for k,v in data.items() if k!='code']
-                else: db.session.add(Book(**data)); added+=1
-            db.session.commit(); flash(f'Đã nhập/cập nhật Excel. Thêm mới {added} sách.','success'); return redirect(url_for('books'))
+            wb=load_workbook(f,read_only=True,data_only=True); ws=wb.active
+            mapping=_excel_map(ws); added=updated=skipped=0
+            for row in ws.iter_rows(min_row=2,values_only=True):
+                code=_cell(row,mapping,'code'); title=_cell(row,mapping,'title')
+                if code is None or title is None or not str(code).strip() or not str(title).strip():
+                    skipped += 1; continue
+                code=str(code).strip(); title=str(title).strip()
+                year=_cell(row,mapping,'year'); qty=_cell(row,mapping,'quantity')
+                try: year=int(float(year)) if year not in (None,'') else None
+                except: year=None
+                try: qty=max(0,int(float(qty))) if qty not in (None,'') else 0
+                except: qty=0
+                data=dict(code=code,title=title,author=_cell(row,mapping,'author'),category=_cell(row,mapping,'category'),publisher=_cell(row,mapping,'publisher'),year=year,quantity=qty,location=_cell(row,mapping,'location'))
+                b=Book.query.filter_by(code=code).first()
+                if b:
+                    for k,v in data.items():
+                        if k!='code': setattr(b,k,v)
+                    updated += 1
+                else:
+                    db.session.add(Book(**data)); added += 1
+            db.session.commit()
+            flash(f'Nhập Excel thành công: thêm {added}, cập nhật {updated}, bỏ qua {skipped}.','success')
+            return redirect(url_for('books'))
         except Exception as e: db.session.rollback(); flash(f'Không thể đọc Excel: {e}','error')
-    return render_template('import_books.html')
+    return render_template('import_books.html', bad_count=Book.query.filter_by(author='4',category='44',quantity=44,location='4').count())
+
+@app.route('/books/template')
+def download_books_template():
+    if not logged_in(): return redirect(url_for('login'))
+    wb=Workbook(); ws=wb.active; ws.title='Danh sách sách'
+    ws.append(['Mã','Tên sách','Tác giả','Thể loại','Nhà xuất bản','Năm','Số lượng','Vị trí'])
+    ws.append(['S001','Ví dụ: Dế Mèn phiêu lưu ký','Tô Hoài','Văn học','NXB Kim Đồng',2026,5,'Kệ A1'])
+    out=BytesIO(); wb.save(out); out.seek(0)
+    return send_file(out,as_attachment=True,download_name='mau_nhap_sach.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.route('/books/cleanup-bad-import', methods=['POST'])
+def cleanup_bad_import():
+    if not logged_in(): return redirect(url_for('login'))
+    bad=Book.query.filter_by(author='4',category='44',quantity=44,location='4').all()
+    deleted=0; skipped=0
+    for b in bad:
+        if Loan.query.filter_by(book_id=b.id).first(): skipped += 1; continue
+        db.session.delete(b); deleted += 1
+    db.session.commit()
+    flash(f'Đã dọn dữ liệu nhập lỗi: xóa {deleted} sách, giữ lại {skipped} sách vì đã có lịch sử mượn.','success')
+    return redirect(url_for('books'))
 
 @app.route('/readers')
 def readers():

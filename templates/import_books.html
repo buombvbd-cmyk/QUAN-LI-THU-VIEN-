@@ -1,1 +1,19 @@
-{% extends 'base.html' %}{% block content %}<section class="formcard"><h1>Nhập sách bằng Excel</h1><p>Thứ tự cột: Mã, Tên sách, Tác giả, Thể loại, Nhà xuất bản, Năm, Số lượng, Vị trí.</p><form method="post" enctype="multipart/form-data"><input type="file" name="file" accept=".xlsx" required><button class="btn">Nhập dữ liệu</button></form></section>{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<section class="formcard">
+  <h1>📥 Nhập sách bằng Excel</h1>
+  <p>Hệ thống tự nhận diện các cột: <b>Mã, Tên sách, Tác giả, Thể loại, Nhà xuất bản, Năm, Số lượng, Vị trí</b>.</p>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
+    <a class="btn light" href="{{url_for('download_books_template')}}">📥 Tải Excel mẫu</a>
+    {% if bad_count %}
+    <form method="post" action="{{url_for('cleanup_bad_import')}}" onsubmit="return confirm('Xóa các sách có dấu hiệu nhập Excel sai (Tác giả=4, Thể loại=44, Số lượng=44, Vị trí=4)? Chỉ sách chưa từng mượn mới bị xóa.');">
+      <button class="btn" type="submit">🧹 Dọn {{bad_count}} sách nhập lỗi</button>
+    </form>
+    {% endif %}
+  </div>
+  <form method="post" enctype="multipart/form-data">
+    <input type="file" name="file" accept=".xlsx" required>
+    <button class="btn" type="submit">📤 Nhập dữ liệu</button>
+  </form>
+</section>
+{% endblock %}
