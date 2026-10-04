@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 from io import BytesIO
 import re
 import unicodedata
+import base64
 
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, abort
 from flask_sqlalchemy import SQLAlchemy
@@ -45,7 +46,7 @@ class Book(db.Model):
     year = db.Column(db.Integer)
     quantity = db.Column(db.Integer, default=1)
     location = db.Column(db.String(120))
-    cover = db.Column(db.String(500))
+    cover = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Reader(db.Model):
@@ -161,6 +162,14 @@ def init_db():
 
 with app.app_context():
     init_db()
+    # SQLAlchemy create_all() không đổi kiểu cột đã tồn tại.
+    # PostgreSQL cần chuyển cover sang TEXT để chứa data URL của ảnh.
+    try:
+        if DATABASE_URL:
+            db.session.execute(db.text('ALTER TABLE book ALTER COLUMN cover TYPE TEXT'))
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
 
 @app.route('/login', methods=['GET','POST'])
 def login():
@@ -206,17 +215,21 @@ def books():
     return render_template('books.html', books=query.order_by(Book.title).all(), q=q)
 
 def save_cover(file_obj):
+    """Lưu ảnh bìa trực tiếp trong database để không mất trên Render."""
     if not file_obj or not file_obj.filename:
         return None
-    ext=file_obj.filename.rsplit('.',1)[-1].lower() if '.' in file_obj.filename else ''
+
+    ext = file_obj.filename.rsplit('.', 1)[-1].lower() if '.' in file_obj.filename else ''
     if ext not in ALLOWED_COVER_EXTENSIONS:
         raise ValueError('Ảnh bìa phải là PNG, JPG, JPEG hoặc WEBP.')
-    filename=secure_filename(file_obj.filename)
-    stem=secure_filename(os.path.splitext(filename)[0]) or 'cover'
-    filename=f"{stem}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.{ext}"
-    path=os.path.join(UPLOAD_DIR, filename)
-    file_obj.save(path)
-    return f'uploads/{filename}'
+
+    raw = file_obj.read()
+    if not raw:
+        raise ValueError('Ảnh bìa không có dữ liệu.')
+
+    mime = 'image/jpeg' if ext in {'jpg', 'jpeg'} else f'image/{ext}'
+    encoded = base64.b64encode(raw).decode('ascii')
+    return f'data:{mime};base64,{encoded}'
 
 @app.route('/books/add', methods=['GET','POST'])
 def add_book():
