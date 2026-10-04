@@ -145,6 +145,12 @@ def award_return_points(loan):
         db.session.commit()
     refresh_badges(loan.reader_id)
 
+def is_overdue(loan):
+    return loan.status == 'Đang mượn' and loan.due_date and loan.due_date < date.today()
+
+def class_names():
+    return [x[0] for x in db.session.query(Reader.class_name).filter(Reader.class_name.isnot(None), Reader.class_name!='').distinct().order_by(Reader.class_name).all()]
+
 def init_db():
     db.create_all()
     if not User.query.filter_by(username='admin').first():
@@ -344,10 +350,15 @@ def reader_card(reader_id):
 @app.route('/loans')
 def loans():
     if not logged_in(): return redirect(url_for('login'))
-    q=request.args.get('q','').strip(); query=Loan.query.join(Book).join(Reader)
+    q=request.args.get('q','').strip(); status=request.args.get('status','all')
+    query=Loan.query.join(Book).join(Reader)
     if q:
         like=f'%{q}%'; query=query.filter(db.or_(Book.title.ilike(like),Book.code.ilike(like),Reader.name.ilike(like),Reader.code.ilike(like)))
-    return render_template('loans.html',loans=query.order_by(Loan.id.desc()).all())
+    if status == 'active': query=query.filter(Loan.status=='Đang mượn')
+    elif status == 'returned': query=query.filter(Loan.status=='Đã trả')
+    elif status == 'overdue': query=query.filter(Loan.status=='Đang mượn', Loan.due_date < date.today())
+    data=query.order_by(Loan.id.desc()).all()
+    return render_template('loans.html',loans=data,q=q,status=status,is_overdue=is_overdue)
 
 @app.route('/loans/add', methods=['GET','POST'])
 def add_loan():
@@ -443,15 +454,33 @@ def reading_culture():
     cls=request.args.get('class','').strip(); query=Reader.query
     if cls: query=query.filter_by(class_name=cls)
     rows=[]
-    for r in query.all(): rows.append({'reader':r,'books':books_read(r.id),'points':total_reading_points(r.id),'badges':Badge.query.filter_by(reader_id=r.id).count()})
+    for r in query.all():
+        rows.append({'reader':r,'books':books_read(r.id),'points':total_reading_points(r.id),'badges':Badge.query.filter_by(reader_id=r.id).count()})
     rows.sort(key=lambda x:(-x['points'],-x['books'],x['reader'].name.lower()))
-    classes=[x[0] for x in db.session.query(Reader.class_name).filter(Reader.class_name.isnot(None),Reader.class_name!='').distinct().order_by(Reader.class_name).all()]
-    return render_template('reading_culture.html',rows=rows,classes=classes,selected_class=cls)
+    for i,row in enumerate(rows,1): row['rank']=i
+    return render_template('reading_culture.html',rows=rows,classes=class_names(),selected_class=cls)
 
 @app.route('/reading/activities/add', methods=['POST'])
 def add_activity():
     if not logged_in(): return redirect(url_for('reading_culture'))
-    reader=Reader.query.get_or_404(int(request.form['reader_id'])); typ=request.form.get('activity_type') or 'Khác'; pts=int(request.form.get('points') or ACTIVITY_POINTS.get(typ,5)); db.session.add(ReadingActivity(reader_id=reader.id,activity_type=typ,title=request.form['title'].strip(),description=request.form.get('description'),points=max(0,pts))); db.session.commit(); flash('Đã ghi nhận hoạt động Văn hóa Đọc.','success'); return redirect(url_for('reading_profile',reader_id=reader.id))
+    reader=Reader.query.get_or_404(int(request.form['reader_id']))
+    typ=request.form.get('activity_type') or 'Khác'
+    pts=max(0,int(request.form.get('points') or ACTIVITY_POINTS.get(typ,5)))
+    status='Đã duyệt' if session.get('role')=='admin' else 'Chờ duyệt'
+    db.session.add(ReadingActivity(reader_id=reader.id,activity_type=typ,title=request.form['title'].strip(),description=request.form.get('description'),points=pts,status=status))
+    db.session.commit()
+    flash('Đã ghi nhận hoạt động Văn hóa Đọc.' + (' Chờ duyệt.' if status=='Chờ duyệt' else ''),'success')
+    return redirect(url_for('reading_profile',reader_id=reader.id))
+
+@app.route('/reading/activities/<int:activity_id>/approve', methods=['POST'])
+def approve_activity(activity_id):
+    if not logged_in() or session.get('role')!='admin': abort(403)
+    a=ReadingActivity.query.get_or_404(activity_id); a.status='Đã duyệt'; db.session.commit(); flash('Đã duyệt hoạt động.','success'); return redirect(url_for('reading_profile',reader_id=a.reader_id))
+
+@app.route('/reading/activities/<int:activity_id>/reject', methods=['POST'])
+def reject_activity(activity_id):
+    if not logged_in() or session.get('role')!='admin': abort(403)
+    a=ReadingActivity.query.get_or_404(activity_id); a.status='Từ chối'; db.session.commit(); flash('Đã từ chối hoạt động.','success'); return redirect(url_for('reading_profile',reader_id=a.reader_id))
 
 @app.route('/reading/rewards/add', methods=['POST'])
 def add_reward():
@@ -480,6 +509,12 @@ def classes_export():
         rs=Reader.query.filter_by(class_name=name).all(); ws.append([name,len(rs),sum(books_read(r.id) for r in rs),sum(total_reading_points(r.id) for r in rs)])
     out=BytesIO(); wb.save(out); out.seek(0)
     return send_file(out,as_attachment=True,download_name='bao_cao_lop.xlsx',mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.route('/books/<int:book_id>/history')
+def book_history(book_id):
+    if not logged_in(): return redirect(url_for('login'))
+    b=Book.query.get_or_404(book_id)
+    return render_template('book_history.html',book=b,loans=Loan.query.filter_by(book_id=b.id).order_by(Loan.id.desc()).all())
 
 if __name__ == '__main__':
     print('Website QUẢN LÍ THƯ VIỆN đang chạy')
